@@ -1,0 +1,24 @@
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:${MEDIAMTX_VERSION:?set MEDIAMTX_VERSION in .env}-ffmpeg # -ffmpeg variant: needed by the audio archive hook
+    container_name: mediamtx
+    restart: unless-stopped
+    network_mode: host # recommended by MediaMTX; keeps the ZowieBox's real source IP
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+      - /etc/localtime:/etc/localtime:ro # archive file names in the Pi's local time
+      - type: bind
+        source: /mnt/stream-archive # USB stick mount point (see fstab)
+        target: /recordings
+        bind:
+          propagation: rslave # see the stick even if it is mounted after the container starts
+    environment:
+      MTX_AUTHINTERNALUSERS_0_PASS: "${ZOWIEBOX_PUBLISH_PASSWORD:?}"
+      MTX_PATHDEFAULTS_FORWARD_0_DEST: "rtmps://a.rtmps.youtube.com/live2#${YOUTUBE_STREAM_KEY:?}"
+      MTX_PATHDEFAULTS_FORWARD_1_DEST: "rtmps://live-api-s.facebook.com:443/rtmp#${FACEBOOK_STREAM_KEY:?}"
+      MTX_PATHDEFAULTS_FORWARD_2_DEST: "${TELEGRAM_SERVER_URL:?}#${TELEGRAM_STREAM_KEY:?}"
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

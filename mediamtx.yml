@@ -1,0 +1,52 @@
+# MediaMTX: LAN ingest for the ZowieBox, forwarded natively to YouTube, Facebook and Telegram,
+# with an audio-only archive written to a USB stick.
+# Stream keys are NOT in this file; they are injected as MTX_* environment variables (see compose.yaml).
+
+logLevel: info
+
+# Ingest is RTMP only; disable every other server so nothing else binds on the host.
+rtmp: true
+rtsp: false
+hls: false
+webrtc: false
+srt: false
+moq: false
+
+# Control API on the Pi's loopback only (host networking).
+api: true
+apiAddress: 127.0.0.1:9997
+
+authMethod: internal
+authInternalUsers:
+  # The ZowieBox may publish to live/main: correct credentials AND a LAN source address.
+  # The password is injected as MTX_AUTHINTERNALUSERS_0_PASS (index 0 = this entry; keep it first).
+  - user: zowie
+    pass:
+    ips: ["192.168.10.0/24"]
+    permissions:
+      - action: publish
+        path: live/main
+  # Local tooling (curl, ffprobe on the Pi) may read and use the API.
+  - user: any
+    pass:
+    ips: ["127.0.0.1/32", "::1/128"]
+    permissions:
+      - action: read
+      - action: api
+
+# Forward destinations (the 3 platforms) are defined in pathDefaults.forward via
+# MTX_PATHDEFAULTS_FORWARD_<n>_DEST. Since live/main is the only path that exists,
+# it is the only one that inherits them.
+paths:
+  live/main:
+    # Audio archive: copy the AAC track (no re-encoding) into hourly ADTS files.
+    # ADTS has no index or trailer, so a power cut costs only the last few seconds; the rest stays playable.
+    # /recordings/stream-audio exists only on the USB stick: if the stick is missing, this
+    # hook fails and retries every 5 s, while forwarding to the platforms is unaffected.
+    runOnAvailable: >
+      ffmpeg -hide_banner -loglevel warning
+      -i rtmp://127.0.0.1:1935/$MTX_PATH
+      -map 0:a -c copy
+      -f segment -segment_time 3600 -segment_format adts -reset_timestamps 1 -strftime 1
+      /recordings/stream-audio/%Y-%m-%d_%H-%M-%S.aac
+    runOnAvailableRestart: true
