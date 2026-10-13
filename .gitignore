@@ -1,2 +1,6 @@
+# Secrets: stream keys and the ZowieBox publish password
 .env
 .DS_Store
+
+# rclone remote config, including credentials and OAuth tokens
+rclone/

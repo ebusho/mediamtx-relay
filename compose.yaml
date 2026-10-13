@@ -22,3 +22,35 @@ services:
       options:
         max-size: 10m
         max-file: "3"
+
+  # Uploads finished archive files to Google Drive (or any rclone remote) on a schedule.
+  # supercronic runs `rclone copy` from archive-sync/crontab; see archive-sync/Dockerfile.
+  archive-sync:
+    build:
+      context: ./archive-sync
+      args:
+        RCLONE_VERSION: ${RCLONE_VERSION:?set RCLONE_VERSION in .env}
+    image: mediamtx-relay/archive-sync:${RCLONE_VERSION}
+    pull_policy: build # local image: build it, never try to pull it
+    container_name: archive-sync
+    restart: unless-stopped
+    environment:
+      RCLONE_DESTINATION: ${RCLONE_DESTINATION:?set RCLONE_DESTINATION in .env}
+      RCLONE_MIN_AGE: 10m   # skip the file MediaMTX is still writing (its mtime keeps changing)
+      RCLONE_BWLIMIT: 256k  # ~2 Mbit/s, so uploads never compete with a live stream
+      RCLONE_LOG_LEVEL: INFO
+    volumes:
+      - ./archive-sync/crontab:/etc/crontab:ro
+      - ./rclone:/config/rclone # rclone.conf (git-ignored); writable so OAuth tokens can refresh
+      - /etc/localtime:/etc/localtime:ro
+      - type: bind
+        source: /mnt/stream-archive # mount point; stream-audio/ inside exists only on the USB stick
+        target: /archive
+        read_only: true
+        bind:
+          propagation: rslave # see the stick even if it is mounted after the container starts
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

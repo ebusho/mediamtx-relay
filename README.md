@@ -2,7 +2,7 @@
 
 Multistream relay for the ZowieBox encoder, running on a Raspberry Pi 4.
 
-The ZowieBox can push at most 2 simultaneous streams. This relay accepts **one** stream from it over the LAN and forwards it to **YouTube, Facebook and Telegram**, while archiving the audio track to a USB stick.
+The ZowieBox can push at most 2 simultaneous streams. This relay accepts **one** stream from it over the LAN and forwards it to **YouTube, Facebook and Telegram**, while archiving the audio track to a USB stick and uploading finished archive files to remote storage with rclone.
 
 ```mermaid
 flowchart LR
@@ -11,6 +11,7 @@ flowchart LR
     M -- RTMPS --> F[Facebook]
     M -- RTMPS --> T[Telegram]
     M -- "AAC copy, hourly files" --> U[(USB stick)]
+    U -- "rclone copy every 15 min" --> C[(Google Drive)]
 ```
 
 - **Forwarding** uses MediaMTX's native `forward` feature (v1.20+). Each destination has its own handler, so a failing platform retries every 5 s without affecting the others.
@@ -21,10 +22,11 @@ flowchart LR
 
 | File | Purpose |
 |---|---|
-| `compose.yaml` | Single MediaMTX service (host networking, USB bind mount, secrets via env) |
+| `compose.yaml` | Two services: `mediamtx` (relay and archive recording) and `archive-sync` (scheduled upload) |
 | `mediamtx.yml` | MediaMTX config: RTMP ingest, auth, audio archive hook. Contains no secrets |
 | `.env.example` | Template for `.env`, which holds the version pin, stream keys and publish password |
-| `.gitignore` | Keeps `.env` out of Git |
+| `archive-sync/` | `Dockerfile` (official rclone image plus pinned, checksum-verified supercronic) and the `crontab` |
+| `.gitignore` | Keeps `.env` and `rclone/` (remote credentials) out of Git |
 
 ## Prerequisites
 
@@ -83,6 +85,8 @@ $EDITOR .env
 | `FACEBOOK_STREAM_KEY` | Persistent stream key |
 | `TELEGRAM_SERVER_URL` | As shown in Telegram but **without the trailing slash**, e.g. `rtmps://dc4-1.rtmp.t.me/s` |
 | `TELEGRAM_STREAM_KEY` | Telegram stream key |
+| `RCLONE_VERSION` | Exact rclone release, e.g. `1.75.2` |
+| `RCLONE_DESTINATION` | `<remote>:<folder>`, e.g. `archive:stream-audio` |
 
 ### 3. Start
 
@@ -136,8 +140,16 @@ docker compose logs --tail 100
 **Upgrading MediaMTX:** read the release notes, change `MEDIAMTX_VERSION` in `.env`, then:
 
 ```bash
-docker compose pull && docker compose up -d
+docker compose pull mediamtx && docker compose up -d
 ```
+
+**Upgrading rclone:** change `RCLONE_VERSION` in `.env`, then rebuild:
+
+```bash
+docker compose up -d --build archive-sync
+```
+
+**Upgrading supercronic:** change `SUPERCRONIC_VERSION` and **both** checksums in `archive-sync/Dockerfile`, then rebuild the same way. The build fails if a downloaded binary doesn't match its checksum.
 
 **Validating `mediamtx.yml`** without starting anything:
 
@@ -165,12 +177,65 @@ docker exec mediamtx sh -c 'ffprobe -v error -show_entries stream=codec_name,sam
 - **Power loss:** ADTS files have no index or trailer, so a power cut loses only the last few seconds and the rest stays playable.
 - **Start-up gap:** the first ~2 s of each stream (one keyframe interval) are not archived while ffmpeg waits for the first keyframe.
 
+### Archive upload (rclone)
+
+The `archive-sync` container runs [supercronic](https://github.com/aptible/supercronic), a cron runner built for containers. It runs `rclone copy` from `archive-sync/crontab` every 15 minutes and uploads finished files to `RCLONE_DESTINATION`. The rclone flags are set as `RCLONE_*` environment variables in `compose.yaml`.
+
+- **Overlapping runs:** supercronic never starts a run while the previous one is still going. Job output goes to `docker compose logs`, and SIGTERM shuts it down cleanly.
+
+- **`rclone copy`, never `sync`:** deleting or losing local files never deletes anything remotely.
+- **`--min-age=10m`:** the file MediaMTX is still writing keeps changing its mtime, so it's skipped until the stream (or its hourly segment) ends.
+- **`--bwlimit=256k`** (about 2 Mbit/s): uploads can't starve a live stream.
+- **Safe without the stick:** the container mounts `/mnt/stream-archive` read-only, and `stream-audio/` exists only on the stick. Without the stick, rclone exits with "directory not found", the run is logged as failed, and the next run retries. Nothing is ever written to the SD card. Thanks to `rslave` propagation, a stick mounted later is picked up without a restart.
+
+**One-time setup:** create the config directory, set up the remote (Google Drive steps below), then test it:
+
+```bash
+mkdir -p rclone && chmod 700 rclone
+# ... create the remote ...
+docker compose up -d --build                          # builds archive-sync on first run
+docker compose exec archive-sync rclone lsd archive:  # "archive" = remote name in RCLONE_DESTINATION
+```
+
+#### Google Drive remote
+
+1. **Create your own OAuth client.** rclone's shared client ID is being retired during 2026, so this is required. Follow [Making your own client_id](https://rclone.org/drive/#making-your-own-client-id): enable the Google Drive API, configure the consent screen as *External*, add the `https://www.googleapis.com/auth/drive.file` scope, then create an OAuth client of type *Desktop app*.
+2. **Publish the app** (Audience → *Publish app*). Apps left in *Testing* get grants that expire after a week, which would silently break the unattended upload. You don't need Google's verification; you'll just click through an "unverified app" warning once.
+3. **Authorize through an SSH tunnel**, so no browser or rclone install is needed on the Pi:
+
+   ```bash
+   # on your laptop
+   ssh -L 53682:localhost:53682 <user>@<PI_IP>
+
+   # in that SSH session, on the Pi
+   cd /opt/mediamtx-relay
+   docker run --rm -it --network host -v "$PWD/rclone:/config/rclone" \
+     rclone/rclone:<RCLONE_VERSION> config
+   ```
+
+   Answers: new remote named `archive` (to match `RCLONE_DESTINATION`), storage `drive`, your client ID and secret, scope `drive.file`, no service account, no advanced config. Answer **Yes** to "Use web browser to automatically authenticate", then open the printed `http://127.0.0.1:53682/auth?...` link in your laptop's browser. Answer No to Shared Drive.
+
+`drive.file` lets rclone see only the files it created itself. The Pi can't read or delete anything else in your Drive. Keep using the same client ID: files uploaded by one OAuth client aren't visible to another one.
+
+**Check it:**
+
+```bash
+docker compose logs --tail 50 archive-sync
+
+# Upload right now instead of waiting for the next run
+docker compose exec archive-sync sh -c 'rclone copy /archive/stream-audio "$RCLONE_DESTINATION"'
+
+# After editing archive-sync/crontab
+docker compose exec archive-sync supercronic -test /etc/crontab && docker compose restart archive-sync
+```
+
 ## Security
 
 - **Port 1935** must not be forwarded on the router; ingest is LAN only.
 - **Publishing** requires the `zowie` credentials **and** a source address in `192.168.10.0/24`. Both are enforced by MediaMTX, which matters because Docker-published ports bypass `ufw`.
 - **The Control API** listens on `127.0.0.1:9997` only.
 - **`.env`** holds credentials that let anyone broadcast to your channels. Keep it `chmod 600` and out of Git.
+- **`rclone/rclone.conf`** holds the remote's credentials or OAuth tokens. It's git-ignored; keep the directory `chmod 700`.
 - **Telegram:** any channel admin can revoke the stream key. Agree with the other admins not to.
 
 ## Troubleshooting
@@ -182,6 +247,7 @@ docker exec mediamtx sh -c 'ffprobe -v error -show_entries stream=codec_name,sam
 | Telegram connects but never shows a preview | Trailing slash in `TELEGRAM_SERVER_URL`, or the livestream wasn't opened in the app |
 | YouTube shows no data | YouTube requires both video and audio; check the ZowieBox audio input |
 | No archive files | Stick not mounted (`findmnt /mnt/stream-archive`), or `stream-audio/` missing on it |
+| Archive files not appearing remotely | `docker compose logs archive-sync`; files younger than 10 minutes are skipped on purpose |
 | Container not running after reboot | `systemctl is-enabled docker`; or it was stopped with `docker compose stop` / `down` before rebooting |
 
 ## Design notes
@@ -189,4 +255,5 @@ docker exec mediamtx sh -c 'ffprobe -v error -show_entries stream=codec_name,sam
 - **Native `forward` instead of ffmpeg pushers:** MediaMTX handles RTMPS forwarding, per-destination retries and lifecycle itself, so there are no extra processes or containers.
 - **Secrets as `MTX_*` environment variables:** these use MediaMTX's documented env overrides (`MTX_PATHDEFAULTS_FORWARD_<n>_DEST`, `MTX_AUTHINTERNALUSERS_0_PASS`), so `mediamtx.yml` contains no secrets and can live in Git. `live/main` is the only defined path, so it's the only one that inherits the forward destinations.
 - **Host networking** is recommended by MediaMTX. It preserves the ZowieBox's real source IP for the subnet check and lets the API bind to the Pi's loopback.
+- **Scheduling with supercronic in a container:** Compose has no scheduling primitive, so the scheduler runs as a container. supercronic is built for that: no sleep loop, no Docker socket, and no extra crontab file on the host. Everything (image, schedule, flags and mounts) is versioned in this repo and deployed with `docker compose up -d`.
 - **The `-ffmpeg` image variant** is needed only for the archive hook. If the archive is ever dropped, switch back to the plain scratch-based image.

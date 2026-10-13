@@ -1,0 +1,4 @@
+# Upload finished archive files every 15 minutes.
+# rclone flags (--min-age, --bwlimit, --log-level) come from RCLONE_* variables in compose.yaml.
+# Validate after editing: docker compose exec archive-sync supercronic -test /etc/crontab
+*/15 * * * * rclone copy /archive/stream-audio "$RCLONE_DESTINATION"
