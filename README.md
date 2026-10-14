@@ -27,6 +27,7 @@ flowchart LR
 | `.env.example` | Template for `.env`, which holds the version pin, stream keys and publish password |
 | `archive-sync/` | `Dockerfile` (official rclone image plus pinned, checksum-verified supercronic) and the `crontab` |
 | `.gitignore` | Keeps `.env` and `rclone/` (remote credentials) out of Git |
+| `AGENTS.md` | Context for AI coding agents: invariants, design decisions, verified facts, validation steps |
 
 ## Prerequisites
 
