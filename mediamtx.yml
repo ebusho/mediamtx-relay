@@ -1,5 +1,5 @@
-# MediaMTX: LAN ingest for the ZowieBox, forwarded natively to YouTube, Facebook and Telegram,
-# with an audio-only archive written to a USB stick.
+# MediaMTX: LAN ingest for the ZowieBox, forwarded natively to YouTube and Facebook,
+# pushed to Telegram by an ffmpeg hook, with an audio-only archive written to a USB stick.
 # Stream keys are NOT in this file; they are injected as MTX_* environment variables (see compose.yaml).
 
 logLevel: info
@@ -34,7 +34,7 @@ authInternalUsers:
       - action: read
       - action: api
 
-# Forward destinations (the 3 platforms) are defined in pathDefaults.forward via
+# Forward destinations (YouTube, Facebook) are defined in pathDefaults.forward via
 # MTX_PATHDEFAULTS_FORWARD_<n>_DEST. Since live/main is the only path that exists,
 # it is the only one that inherits them.
 paths:
@@ -50,3 +50,16 @@ paths:
       -f segment -segment_time 3600 -segment_format adts -reset_timestamps 1 -strftime 1
       /recordings/stream-audio/%Y-%m-%d_%H-%M-%S.aac
     runOnAvailableRestart: true
+
+    # Telegram: its ingest closes connections from MediaMTX's native RTMP client (EOF right
+    # after connecting), while ffmpeg with the same URL and key works. So Telegram gets the
+    # stream from ffmpeg (copy, no re-encoding) instead of `forward`.
+    # runOnOnline fires at the same moment as runOnAvailable here (no alwaysAvailable), so the
+    # two hooks run as independent processes: a Telegram failure never interrupts the archive.
+    # $TELEGRAM_RTMP_URL comes from compose.yaml. Hooks run without a shell, so no quoting is needed.
+    runOnOnline: >
+      ffmpeg -hide_banner -loglevel warning
+      -rw_timeout 10000000 -i rtmp://127.0.0.1:1935/$MTX_PATH
+      -map 0 -c copy
+      -rw_timeout 10000000 -f flv $TELEGRAM_RTMP_URL
+    runOnOnlineRestart: true
