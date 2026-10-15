@@ -166,6 +166,8 @@ curl -s "http://127.0.0.1:9997/v3/paths/forward-dests/list?path=facebook"
 docker compose logs --tail 100
 ```
 
+When a stream ends, ffmpeg's hooks print `Error during demuxing: I/O error`, and the Telegram hook also prints `Failed to update header with correct duration/filesize`. Both are normal: MediaMTX closes the hooks' input when the publisher leaves, and a live FLV output can't be rewritten at the end.
+
 **Changing a stream key or password:** edit `.env`, then run `docker compose up -d`. The container is recreated, which briefly interrupts all destinations, so do it between streams.
 
 **Upgrading MediaMTX:** read the release notes, change `MEDIAMTX_VERSION` in `.env`, then:

@@ -133,10 +133,9 @@ Changes to platform settings, the ZowieBox, or Google Cloud can't be tested here
 ## Status
 
 - **Confirmed on the Pi (2026-10-14):** `docker compose up -d --build` works; the ZowieBox publishes with the `main?user=…&pass=…` key; YouTube, Facebook and Telegram (via the ffmpeg hook) receive the stream, with 192 kbps audio.
-- **Modes (2026-10-15):** `youtube-telegram` and `archive-only` were added and tested locally; not yet confirmed on the Pi with the real platforms.
-- **Not yet set up:** the rclone remote. `archive-sync` runs fail until `rclone/rclone.conf` exists.
+- **Modes (2026-10-15):** all three modes (`main`, `youtube-telegram`, `archive-only`) confirmed on the Pi with the real platforms; each reached exactly its output paths.
+- **Archive upload (2026-10-15):** the rclone Google Drive remote is configured and `archive-sync` uploads successfully.
 
 ## Open items
 
-- **Confirm the new modes on the Pi**, then update Status.
 - **Upstream reports to bluenviron/mediamtx:** (1) Telegram's ingest rejects the native `forward` client; if fixed, the `telegram` output path could use `forward` like the others. (2) The env-override panic on empty path entries; if fixed, the `forward: []` workaround could go.

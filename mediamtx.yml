@@ -90,7 +90,7 @@ paths:
     runOnOnline: >
       ffmpeg -hide_banner -loglevel warning
       -rw_timeout 10000000 -i rtmp://127.0.0.1:1935/$MTX_PATH
-      -map 0 -c copy
+      -c copy
       -rw_timeout 10000000 -f flv $TELEGRAM_RTMP_URL
     runOnOnlineRestart: true
 
