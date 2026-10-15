@@ -2,20 +2,35 @@
 
 Multistream relay for the ZowieBox encoder, running on a Raspberry Pi 4.
 
-The ZowieBox can push at most 2 simultaneous streams. This relay accepts **one** stream from it over the LAN and sends it to **YouTube, Facebook and Telegram**, while archiving the audio track to a USB stick and uploading finished archive files to remote storage with rclone.
+The ZowieBox can push at most 2 simultaneous streams. This relay accepts **one** stream from it over the LAN and sends it to **YouTube, Facebook and Telegram**, while archiving the audio track to a USB stick and uploading finished archive files to Google Drive with rclone.
+
+The ZowieBox picks a **mode** with its stream key:
+
+| Mode (stream key) | YouTube | Facebook | Telegram | Audio archive |
+|---|:---:|:---:|:---:|:---:|
+| `main` | ✓ | ✓ | ✓ | ✓ |
+| `youtube-telegram` | ✓ | | ✓ | ✓ |
+| `archive-only` | | | | ✓ |
 
 ```mermaid
 flowchart LR
-    Z[ZowieBox] -- "RTMP (LAN, authenticated)" --> M[MediaMTX on Raspberry Pi]
-    M -- RTMPS --> Y[YouTube]
-    M -- RTMPS --> F[Facebook]
-    M -- "RTMPS (ffmpeg hook)" --> T[Telegram]
-    M -- "AAC copy, hourly files" --> U[(USB stick)]
+    Z[ZowieBox] -- "RTMP (LAN, authenticated)" --> MODES
+
+    subgraph MediaMTX on Raspberry Pi
+        MODES["mode path<br/>live/main | live/youtube-telegram | live/archive-only"]
+        MODES -- local forward --> YP[youtube] & FP[facebook] & TP[telegram] & AP[archive]
+    end
+
+    YP -- "RTMPS (forward)" --> Y[YouTube]
+    FP -- "RTMPS (forward)" --> F[Facebook]
+    TP -- "RTMPS (ffmpeg hook)" --> T[Telegram]
+    AP -- "AAC copy, hourly files" --> U[(USB stick)]
     U -- "rclone copy every 15 min" --> C[(Google Drive)]
 ```
 
+- **Modes and outputs:** every destination is an **output path** inside MediaMTX (`youtube`, `facebook`, `telegram`, `archive`), defined once. A **mode path** is just a list of output paths to feed, using local forwards. Adding or changing a mode never touches platform settings.
 - **YouTube and Facebook** use MediaMTX's native `forward` feature (v1.20+). Each destination has its own handler, so a failing platform retries every 5 s without affecting the others.
-- **Telegram** is pushed by an ffmpeg hook (`runOnOnline`), because Telegram's ingest closes connections from MediaMTX's native RTMP client, while ffmpeg with the same URL and key works. It's an independent process: a Telegram failure doesn't affect the other platforms or the archive.
+- **Telegram** is pushed by an ffmpeg hook, because Telegram's ingest closes connections from MediaMTX's native RTMP client, while ffmpeg with the same URL and key works. It's an independent process: a Telegram failure doesn't affect the other platforms or the archive.
 - **Nothing is re-encoded.** Video and audio are copied as the ZowieBox encoded them, so CPU and RAM use stay low.
 - **The archive** is audio only, copied bit for bit from the stream into hourly `.aac` files.
 
@@ -24,7 +39,7 @@ flowchart LR
 | File | Purpose |
 |---|---|
 | `compose.yaml` | Two services: `mediamtx` (relay and archive recording) and `archive-sync` (scheduled upload) |
-| `mediamtx.yml` | MediaMTX config: RTMP ingest, auth, Telegram and audio archive hooks. Contains no secrets |
+| `mediamtx.yml` | MediaMTX config: RTMP ingest, auth, modes, output paths, Telegram and archive hooks. Contains no secrets |
 | `.env.example` | Template for `.env`, which holds the version pin, stream keys and publish password |
 | `archive-sync/` | `Dockerfile` (official rclone image plus pinned, checksum-verified supercronic) and the `crontab` |
 | `.gitignore` | Keeps `.env` and `rclone/` (remote credentials) out of Git |
@@ -100,14 +115,16 @@ docker compose logs -f
 
 ### 4. ZowieBox
 
-Configure a single RTMP output and disable any other outputs:
+Configure **one** RTMP output and disable any other outputs. The stream key selects the mode:
 
 | Setting | Value |
 |---|---|
 | Server | `rtmp://<PI_IP>:1935/live` |
-| Stream key | `main?user=zowie&pass=<ZOWIEBOX_PUBLISH_PASSWORD>` |
+| Stream key, mode `main` | `main?user=zowie&pass=<ZOWIEBOX_PUBLISH_PASSWORD>` |
+| Stream key, mode `youtube-telegram` | `youtube-telegram?user=zowie&pass=<ZOWIEBOX_PUBLISH_PASSWORD>` |
+| Stream key, mode `archive-only` | `archive-only?user=zowie&pass=<ZOWIEBOX_PUBLISH_PASSWORD>` |
 
-If the ZowieBox rejects `?` or `&` in the key field, put everything in the server URL instead (`rtmp://<PI_IP>:1935/live/main?user=zowie&pass=…`) and leave the key empty.
+Stream in **one mode at a time**. All modes feed the same output paths, so a second mode started in parallel would take over those outputs from the first.
 
 Because nothing is re-encoded, the encoder settings must suit all three platforms:
 
@@ -116,22 +133,32 @@ Because nothing is re-encoded, the encoder settings must suit all three platform
 
 ## Going live
 
-1. Start streaming on the ZowieBox. YouTube goes live automatically.
-2. Facebook Live Producer: click **Go Live**.
-3. Telegram: tap **Start Streaming**.
+1. Set the ZowieBox stream key for the mode you want, then start streaming. YouTube goes live automatically (modes `main` and `youtube-telegram`).
+2. Facebook Live Producer: click **Go Live** (mode `main`).
+3. Telegram: tap **Start Streaming** (modes `main` and `youtube-telegram`).
 4. To finish, stop the ZowieBox (YouTube ends automatically), then end the broadcasts in Facebook and Telegram.
+
+Mode `archive-only` needs no platform steps: starting the ZowieBox starts recording.
 
 > With Auto-start enabled, YouTube goes **public** as soon as video arrives. For test runs, set the YouTube stream to Unlisted first.
 
 ## Operations
 
-**Forwarding status per platform** (`forwarding`, `error` with `lastError`, or `idle`):
+**What's live right now** (active mode and output paths):
 
 ```bash
-curl -s "http://127.0.0.1:9997/v3/paths/forward-dests/list?path=live/main"
+curl -s http://127.0.0.1:9997/v3/paths/list \
+  | python3 -c 'import sys, json; print("\n".join(p["name"] for p in json.load(sys.stdin)["items"] if p["ready"]))'
 ```
 
-This lists YouTube and Facebook. Telegram isn't a forward destination: while you're live, its ffmpeg process shows up as an extra reader of `live/main`, and its errors appear in the logs as `runOnOnline command exited`.
+**YouTube and Facebook status** (`forwarding`, `error` with `lastError`, or `idle`):
+
+```bash
+curl -s "http://127.0.0.1:9997/v3/paths/forward-dests/list?path=youtube"
+curl -s "http://127.0.0.1:9997/v3/paths/forward-dests/list?path=facebook"
+```
+
+**Telegram status:** Telegram isn't a forward destination. While it's live, the `telegram` path is ready, and its errors appear in the logs as `[path telegram] runOnOnline command exited`.
 
 **Logs:** stream keys are stripped from MediaMTX's log output.
 
@@ -164,7 +191,7 @@ docker run --rm -v ./mediamtx.yml:/mediamtx.yml:ro \
 
 ### Audio archive
 
-Files are written to `/mnt/stream-archive/stream-audio/` as `YYYY-MM-DD_HH-MM-SS.aac`, one file per hour of streaming, named in the Pi's local time. At 192 kbps that's about 86 MB per hour.
+Every mode records. Files are written to `/mnt/stream-archive/stream-audio/` as `YYYY-MM-DD_HH-MM-SS.aac`, one file per hour of streaming, named in the Pi's local time. File names don't show which mode was used. At 192 kbps that's about 86 MB per hour.
 
 ```bash
 # Copy the archive to another machine (ext4 isn't readable natively on Windows/macOS)
@@ -247,7 +274,8 @@ docker compose exec archive-sync supercronic -test /etc/crontab && docker compos
 
 | Symptom | Likely cause |
 |---|---|
-| `failed to authenticate` in the logs | Wrong password in the ZowieBox, or its IP is outside `192.168.10.0/24` |
+| `failed to authenticate` in the logs | Wrong password in the ZowieBox, its IP is outside `192.168.10.0/24`, or the stream key names a mode that doesn't exist |
+| A platform receives the stream when it shouldn't (or the reverse) | The ZowieBox stream key selects the mode: check it, then check the mode's `forward` list in `mediamtx.yml` |
 | One destination stuck in `error` | That platform's key changed or was revoked: update `.env` |
 | Telegram shows "doesn't see any stream" | Compare `TELEGRAM_SERVER_URL` and `TELEGRAM_STREAM_KEY` with the app (a revoked key or a different `dcN` server); check the logs for `runOnOnline command exited` |
 | YouTube shows no data | YouTube requires both video and audio; check the ZowieBox audio input |
@@ -258,8 +286,9 @@ docker compose exec archive-sync supercronic -test /etc/crontab && docker compos
 ## Design notes
 
 - **Native `forward` instead of ffmpeg pushers:** MediaMTX handles RTMPS forwarding, per-destination retries and lifecycle itself, so there are no extra processes or containers.
-- **Secrets as `MTX_*` environment variables:** these use MediaMTX's documented env overrides (`MTX_PATHDEFAULTS_FORWARD_<n>_DEST`, `MTX_AUTHINTERNALUSERS_0_PASS`), so `mediamtx.yml` contains no secrets and can live in Git. `live/main` is the only defined path, so it's the only one that inherits the forward destinations.
+- **Modes as lists of output paths:** each platform is configured once, on its output path. Modes only forward locally (`rtmp://127.0.0.1:1935/<output>`), so `mediamtx.yml` describes every mode without containing a single key. The local hop copies packets on loopback, which costs next to nothing.
+- **Secrets as `MTX_*` environment variables:** these use MediaMTX's documented env overrides (`MTX_PATHS_YOUTUBE_FORWARD_0_DEST`, `MTX_PATHS_FACEBOOK_FORWARD_0_DEST`, `MTX_AUTHINTERNALUSERS_0_PASS`), so `mediamtx.yml` contains no secrets and can live in Git. Env overrides can only address path names without `/` or `_`, which is why output paths have simple names like `youtube`. Those paths are declared with `forward: []`, because an empty path entry makes the env override panic in v1.21.2.
 - **Host networking** is recommended by MediaMTX. It preserves the ZowieBox's real source IP for the subnet check and lets the API bind to the Pi's loopback.
 - **Scheduling with supercronic in a container:** Compose has no scheduling primitive, so the scheduler runs as a container. supercronic is built for that: no sleep loop, no Docker socket, and no extra crontab file on the host. Everything (image, schedule, flags and mounts) is versioned in this repo and deployed with `docker compose up -d`.
-- **Telegram via an ffmpeg hook instead of `forward`:** tested on v1.21.2, Telegram's ingest closes connections from MediaMTX's RTMP client immediately (`EOF`), while ffmpeg with the identical URL and key streams fine. `runOnOnline` is used because `runOnAvailable` is already taken by the archive. Both fire at the same moment (there's no `alwaysAvailable`), so they run as two independent processes.
+- **Telegram via an ffmpeg hook instead of `forward`:** tested on v1.21.2, Telegram's ingest closes connections from MediaMTX's RTMP client immediately (`EOF`), while ffmpeg with the identical URL and key streams fine. The hook lives on the `telegram` output path, so it runs only in modes that include Telegram, and it's independent of the archive hook on the `archive` path.
 - **The `-ffmpeg` image variant** is needed by both hooks (Telegram and the archive).

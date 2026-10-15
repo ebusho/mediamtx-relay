@@ -1,6 +1,6 @@
-# MediaMTX: LAN ingest for the ZowieBox, forwarded natively to YouTube and Facebook,
-# pushed to Telegram by an ffmpeg hook, with an audio-only archive written to a USB stick.
-# Stream keys are NOT in this file; they are injected as MTX_* environment variables (see compose.yaml).
+# MediaMTX: LAN ingest for the ZowieBox, routed to YouTube, Facebook, Telegram and an
+# audio-only archive on a USB stick. Stream keys are NOT in this file; they are injected
+# as MTX_* / TELEGRAM_* environment variables (see compose.yaml).
 
 logLevel: info
 
@@ -18,7 +18,7 @@ apiAddress: 127.0.0.1:9997
 
 authMethod: internal
 authInternalUsers:
-  # The ZowieBox may publish to live/main: correct credentials AND a LAN source address.
+  # The ZowieBox may publish to the mode paths: correct credentials AND a LAN source address.
   # The password is injected as MTX_AUTHINTERNALUSERS_0_PASS (index 0 = this entry; keep it first).
   - user: zowie
     pass:
@@ -26,40 +26,83 @@ authInternalUsers:
     permissions:
       - action: publish
         path: live/main
-  # Local tooling (curl, ffprobe on the Pi) may read and use the API.
+      - action: publish
+        path: live/youtube-telegram
+      - action: publish
+        path: live/archive-only
+  # Local only: the mode paths publish into the output paths, the hooks read from them,
+  # and local tooling (curl, ffprobe) may read and use the API.
   - user: any
     pass:
     ips: ["127.0.0.1/32", "::1/128"]
     permissions:
+      - action: publish
+        path: youtube
+      - action: publish
+        path: facebook
+      - action: publish
+        path: telegram
+      - action: publish
+        path: archive
       - action: read
       - action: api
 
-# Forward destinations (YouTube, Facebook) are defined in pathDefaults.forward via
-# MTX_PATHDEFAULTS_FORWARD_<n>_DEST. Since live/main is the only path that exists,
-# it is the only one that inherits them.
 paths:
+  # ---------------------------------------------------------------------------
+  # Modes: the ZowieBox picks one with its stream key (main, youtube-telegram,
+  # archive-only). Each mode is just a list of local output paths to feed.
+  # ---------------------------------------------------------------------------
   live/main:
-    # Audio archive: copy the AAC track (no re-encoding) into hourly ADTS files.
-    # ADTS has no index or trailer, so a power cut costs only the last few seconds; the rest stays playable.
-    # /recordings/stream-audio exists only on the USB stick: if the stick is missing, this
-    # hook fails and retries every 5 s, while forwarding to the platforms is unaffected.
-    runOnAvailable: >
-      ffmpeg -hide_banner -loglevel warning
-      -i rtmp://127.0.0.1:1935/$MTX_PATH
-      -map 0:a -c copy
-      -f segment -segment_time 3600 -segment_format adts -reset_timestamps 1 -strftime 1
-      /recordings/stream-audio/%Y-%m-%d_%H-%M-%S.aac
-    runOnAvailableRestart: true
+    forward:
+      - dest: rtmp://127.0.0.1:1935/youtube
+      - dest: rtmp://127.0.0.1:1935/facebook
+      - dest: rtmp://127.0.0.1:1935/telegram
+      - dest: rtmp://127.0.0.1:1935/archive
 
-    # Telegram: its ingest closes connections from MediaMTX's native RTMP client (EOF right
-    # after connecting), while ffmpeg with the same URL and key works. So Telegram gets the
-    # stream from ffmpeg (copy, no re-encoding) instead of `forward`.
-    # runOnOnline fires at the same moment as runOnAvailable here (no alwaysAvailable), so the
-    # two hooks run as independent processes: a Telegram failure never interrupts the archive.
-    # $TELEGRAM_RTMP_URL comes from compose.yaml. Hooks run without a shell, so no quoting is needed.
+  live/youtube-telegram:
+    forward:
+      - dest: rtmp://127.0.0.1:1935/youtube
+      - dest: rtmp://127.0.0.1:1935/telegram
+      - dest: rtmp://127.0.0.1:1935/archive
+
+  live/archive-only:
+    forward:
+      - dest: rtmp://127.0.0.1:1935/archive
+
+  # ---------------------------------------------------------------------------
+  # Outputs: one path per destination, each defined once.
+  # ---------------------------------------------------------------------------
+
+  # Native forward. The destination (with key) is injected as MTX_PATHS_YOUTUBE_FORWARD_0_DEST.
+  # Keep "forward: []": an empty path entry makes MediaMTX's env override panic (v1.21.2).
+  youtube:
+    forward: []
+
+  # Native forward. The destination (with key) is injected as MTX_PATHS_FACEBOOK_FORWARD_0_DEST.
+  facebook:
+    forward: []
+
+  # Telegram's ingest closes connections from MediaMTX's native RTMP client (EOF right after
+  # connecting), while ffmpeg with the same URL and key works. So Telegram gets the stream
+  # from ffmpeg (copy, no re-encoding). $TELEGRAM_RTMP_URL comes from compose.yaml.
+  # Hooks run without a shell, so no quoting is needed.
+  telegram:
     runOnOnline: >
       ffmpeg -hide_banner -loglevel warning
       -rw_timeout 10000000 -i rtmp://127.0.0.1:1935/$MTX_PATH
       -map 0 -c copy
       -rw_timeout 10000000 -f flv $TELEGRAM_RTMP_URL
+    runOnOnlineRestart: true
+
+  # Audio archive: copy the AAC track (no re-encoding) into hourly ADTS files.
+  # ADTS has no index or trailer, so a power cut costs only the last few seconds.
+  # /recordings/stream-audio exists only on the USB stick: if the stick is missing, this
+  # hook fails and retries every 5 s, while the platforms are unaffected.
+  archive:
+    runOnOnline: >
+      ffmpeg -hide_banner -loglevel warning
+      -i rtmp://127.0.0.1:1935/$MTX_PATH
+      -map 0:a -c copy
+      -f segment -segment_time 3600 -segment_format adts -reset_timestamps 1 -strftime 1
+      /recordings/stream-audio/%Y-%m-%d_%H-%M-%S.aac
     runOnOnlineRestart: true

@@ -14,9 +14,9 @@ services:
           propagation: rslave # see the stick even if it is mounted after the container starts
     environment:
       MTX_AUTHINTERNALUSERS_0_PASS: "${ZOWIEBOX_PUBLISH_PASSWORD:?}"
-      MTX_PATHDEFAULTS_FORWARD_0_DEST: "rtmps://a.rtmps.youtube.com/live2#${YOUTUBE_STREAM_KEY:?}"
-      MTX_PATHDEFAULTS_FORWARD_1_DEST: "rtmps://live-api-s.facebook.com:443/rtmp#${FACEBOOK_STREAM_KEY:?}"
-      # Telegram is pushed by the runOnOnline ffmpeg hook (see mediamtx.yml), not by forward
+      MTX_PATHS_YOUTUBE_FORWARD_0_DEST: "rtmps://a.rtmps.youtube.com/live2#${YOUTUBE_STREAM_KEY:?}"
+      MTX_PATHS_FACEBOOK_FORWARD_0_DEST: "rtmps://live-api-s.facebook.com:443/rtmp#${FACEBOOK_STREAM_KEY:?}"
+      # Telegram is pushed by the ffmpeg hook on the "telegram" path (see mediamtx.yml), not by forward
       TELEGRAM_RTMP_URL: "${TELEGRAM_SERVER_URL:?}${TELEGRAM_STREAM_KEY:?}"
     logging:
       driver: json-file
