@@ -42,10 +42,10 @@ flowchart LR
 |---|---|
 | `compose.yaml` | Two services: `mediamtx` (relay and archive recording) and `archive-sync` (scheduled upload) |
 | `mediamtx.yml` | MediaMTX config: RTMP ingest, auth, modes, output paths, Telegram and archive hooks. Contains no secrets |
-| `assets/telegram.png` | The 640×360 picture Telegram listeners see instead of the camera video |
+| `assets/telegram.png` | Default 640×360 picture Telegram listeners see instead of the camera video (override with `TELEGRAM_PICTURE`) |
 | `.env.example` | Template for `.env`, which holds the version pin, stream keys and publish password |
 | `archive-sync/` | `Dockerfile` (official rclone image plus pinned, checksum-verified supercronic) and the `crontab` |
-| `.gitignore` | Keeps `.env` and `rclone/` (remote credentials) out of Git |
+| `.gitignore` | Keeps `.env`, `rclone/` (remote credentials) and `local/` (your own files, e.g. a Telegram picture) out of Git |
 | `AGENTS.md` | Context for AI coding agents: invariants, design decisions, verified facts, validation steps |
 
 ## Prerequisites
@@ -105,6 +105,7 @@ $EDITOR .env
 | `FACEBOOK_STREAM_KEY` | Persistent stream key |
 | `TELEGRAM_SERVER_URL` | Exactly as shown in Telegram, including the trailing slash, e.g. `rtmps://dc4-1.rtmp.t.me/s/` |
 | `TELEGRAM_STREAM_KEY` | Telegram stream key |
+| `TELEGRAM_PICTURE` | Optional. Your own 640×360 PNG for Telegram, e.g. `./local/telegram.png`. Unset = `assets/telegram.png` |
 | `RCLONE_VERSION` | Exact rclone release, e.g. `1.75.2` |
 | `RCLONE_DESTINATION` | `<remote>:<folder>`, e.g. `archive:stream-audio` |
 
@@ -163,7 +164,15 @@ curl -s "http://127.0.0.1:9997/v3/paths/forward-dests/list?path=facebook"
 
 **Telegram status:** Telegram isn't a forward destination. While it's live, the `telegram` path is ready, and its errors appear in the logs as `[path telegram] runOnOnline command exited`.
 
-**Changing Telegram's picture:** replace `assets/telegram.png` with your own **640×360** PNG (the hook doesn't scale, so other sizes change the stream's resolution), then run `docker compose restart mediamtx` between streams. The sample picture is a generic "Live audio" card.
+**Your own Telegram picture:** don't edit the tracked `assets/telegram.png` (a `git pull` would then conflict with it). Put your picture in `local/`, which is git-ignored, and point `.env` at it:
+
+```bash
+mkdir -p local && cp /path/to/your-logo.png local/telegram.png
+echo 'TELEGRAM_PICTURE=./local/telegram.png' >> .env
+docker compose up -d        # between streams
+```
+
+Use a **640×360** PNG: the hook doesn't scale it, so other sizes change the stream's resolution. Without `TELEGRAM_PICTURE`, the repo's sample "Live audio" card is used. If the file `TELEGRAM_PICTURE` points to is missing, `docker compose up` stops with a "bind source path does not exist" error instead of starting with a broken Telegram picture.
 
 **Logs:** stream keys are stripped from MediaMTX's log output.
 
@@ -284,7 +293,7 @@ docker compose exec archive-sync supercronic -test /etc/crontab && docker compos
 | `failed to authenticate` in the logs | Wrong password in the ZowieBox, its IP is outside `192.168.10.0/24`, or the stream key names a mode that doesn't exist |
 | A platform receives the stream when it shouldn't (or the reverse) | The ZowieBox stream key selects the mode: check it, then check the mode's `forward` list in `mediamtx.yml` |
 | One destination stuck in `error` | That platform's key changed or was revoked: update `.env` |
-| Telegram listeners see "not broadcasting live stream data" (audio still plays) | The Telegram push has no video track: check the `telegram` hook in `mediamtx.yml` and that `assets/telegram.png` exists |
+| Telegram listeners see "not broadcasting live stream data" (audio still plays) | The Telegram push has no video track: check the `telegram` hook in `mediamtx.yml` |
 | Telegram shows "doesn't see any stream" | Compare `TELEGRAM_SERVER_URL` and `TELEGRAM_STREAM_KEY` with the app (a revoked key or a different `dcN` server); check the logs for `runOnOnline command exited` |
 | YouTube shows no data | YouTube requires both video and audio; check the ZowieBox audio input |
 | No archive files | Stick not mounted (`findmnt /mnt/stream-archive`), or `stream-audio/` missing on it |

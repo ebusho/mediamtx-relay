@@ -34,11 +34,11 @@ A second container uploads finished archive files to Google Drive every 15 minut
 |---|---|
 | `compose.yaml` | `mediamtx` (relay + archive recording) and `archive-sync` (scheduled upload) |
 | `mediamtx.yml` | Ingest, auth, mode paths, output paths, Telegram and archive hooks. **No secrets** |
-| `assets/telegram.png` | Picture Telegram listeners see (640×360); mounted at `/assets` |
+| `assets/telegram.png` | Default picture Telegram listeners see (640×360). Mounted as `/assets/telegram.png`; installations override it with `TELEGRAM_PICTURE` |
 | `archive-sync/Dockerfile` | `rclone/rclone` + supercronic (version- and SHA-256-pinned, arm64 and amd64) |
 | `archive-sync/crontab` | The one scheduled `rclone copy` |
 | `.env.example` | Every variable `compose.yaml` needs, with placeholders |
-| `.gitignore` | Ignores `.env` and `rclone/` (credentials) |
+| `.gitignore` | Ignores `.env`, `rclone/` (credentials) and `local/` (per-installation files) |
 | `README.md` | Operator documentation: setup, operations, troubleshooting |
 
 ## Invariants: don't break these
@@ -50,13 +50,14 @@ A second container uploads finished archive files to Google Drive every 15 minut
 5. **The `zowie` user stays first in `authInternalUsers`.** Its password is injected by index (`..._0_PASS`).
 6. **Telegram stays on its own ffmpeg hook on the `telegram` path, separate from the archive hook on the `archive` path.** There is one Telegram output: Telegram gets audio plus a picture, never the camera video (the owner chose to replace it, not to add a second Telegram output). Don't move Telegram back to `forward` without testing against the real Telegram ingest first (see Verified facts), and don't merge the Telegram and archive hooks into one ffmpeg process: a Telegram failure would then interrupt the archive.
 7. **Audio and camera video are never re-encoded.** Forwarding is native and the hooks copy the audio. The only encoder is Telegram's picture. Keep it cheap: a 640×360 PNG, decoded once (`movie` + `loop`), `ultrafast`, `stillimage`, 30 fps. A black picture measured about a quarter of one Pi 4 core; a logo costs somewhat more. Transcoding the camera video on a Pi 4 would be expensive and would change quality. Encoder settings belong on the ZowieBox.
-8. **Keep Telegram's picture track at 30 fps.** See Verified facts: no video track makes Telegram show listeners a "not broadcasting" notice, and 5 fps made Telegram's player add 30+ s of delay. `assets/telegram.png` must exist and stay 640×360; the hook doesn't scale it.
+8. **Keep Telegram's picture track at 30 fps.** See Verified facts: no video track makes Telegram show listeners a "not broadcasting" notice, and 5 fps made Telegram's player add 30+ s of delay. The picture must be 640×360; the hook doesn't scale it.
 9. **Never write archive data to the SD card.** Both containers rely on `stream-audio/` existing only on the stick: if it's missing, the hook and the upload fail and retry instead of writing elsewhere. Never create `stream-audio/` on the host path or in an entrypoint, and never use `create_host_path: true` for it. Both bind mounts use `propagation: rslave` so a stick mounted later is picked up.
 10. **`rclone copy`, never `rclone sync` or `move`.** Losing or wiping local files must never delete the remote archive.
 11. **Keep `RCLONE_MIN_AGE`** (currently `10m`). The file being recorded keeps changing its mtime; this is what stops partial files from being uploaded.
 12. **Keep `RCLONE_BWLIMIT`** (currently `256k`, about 2 Mbit/s). Uploads must never compete with a live stream for upload bandwidth.
 13. **Pin exact versions everywhere:** the MediaMTX image tag, the rclone image tag, and supercronic's version plus its checksums. No `latest`, no ranges.
 14. **Explicit names.** Environment variables are spelled out (`YOUTUBE_STREAM_KEY`, not `YT_KEY`). The repo owner explicitly asked for this.
+15. **Per-installation customization never touches tracked files.** Settings go in `.env` (`.env.example` documents them); files go in `local/`, referenced from `.env` (e.g. `TELEGRAM_PICTURE=./local/telegram.png`, with the tracked default as the Compose `:-` fallback). This is what keeps `git pull` conflict-free for everyone running the repo. Mount such files with `create_host_path: false`, so a wrong path fails `docker compose up` loudly instead of Docker creating an empty directory.
 
 ## Decisions and rejected alternatives
 

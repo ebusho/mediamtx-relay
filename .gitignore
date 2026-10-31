@@ -4,3 +4,6 @@
 
 # rclone remote config, including credentials and OAuth tokens
 rclone/
+
+# Per-installation files that must survive git pull (e.g. your own Telegram picture)
+local/

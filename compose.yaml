@@ -6,7 +6,16 @@ services:
     network_mode: host # recommended by MediaMTX; keeps the ZowieBox's real source IP
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
-      - ./assets:/assets:ro # assets/telegram.png: the picture Telegram listeners see
+      # The picture Telegram listeners see. Default: the repo's assets/telegram.png.
+      # Your own: set TELEGRAM_PICTURE in .env (e.g. ./local/telegram.png; local/ is git-ignored),
+      # so git pull never touches it. A missing file stops `docker compose up` with an error
+      # instead of silently breaking Telegram.
+      - type: bind
+        source: ${TELEGRAM_PICTURE:-./assets/telegram.png}
+        target: /assets/telegram.png
+        read_only: true
+        bind:
+          create_host_path: false
       - /etc/localtime:/etc/localtime:ro # archive file names in the Pi's local time
       - type: bind
         source: /mnt/stream-archive # USB stick mount point (see fstab)
