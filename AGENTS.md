@@ -102,6 +102,9 @@ These were each considered and rejected for stated reasons. Don't reintroduce th
   - Audio only (no video track): Telegram accepts it and it plays with the screen locked, but admins see "Telegram doesn't see any stream" and listeners see "<channel> is currently not broadcasting live stream data".
   - Audio + black picture at 5 fps: plays with the screen locked, but 30+ s of delay.
   - Audio + black picture at 30 fps: plays with the screen locked, ~7 s delay, no notices. The repo's hook uses the same settings with a PNG instead of black.
+- **FFmpeg 8 colour tagging (found 2026-10-31):** the `-ffmpeg` image ships FFmpeg 8.1 (Alpine 3.24). Converting a PNG with just `format=yuv420p` makes FFmpeg 8 tag the H.264 stream as full-range RGB (`yuv420p(pc, gbr/…)`). Telegram then shows a black picture and "not broadcasting", with broken audio. FFmpeg 6/7 don't do this, which is why tests on an older local ffmpeg passed. The hook converts explicitly (`scale=out_color_matrix=bt709:out_range=tv`) and tags the stream (`-colorspace/-color_primaries/-color_trc bt709 -color_range tv`).
+- **`setpts=N/30/TB` after a PNG gives duplicate timestamps** (the PNG's time base is 1/25). Use `fps=30` in the chain instead.
+- **Looping a GIF with `movie=…:loop=0` plus `fps` hangs ffmpeg;** the GIF demuxer's `-ignore_loop 0` works (GIFs aren't used in the repo).
 - **Audio:** ZowieBox encodes AAC-LC, 48 kHz, stereo, line-in, at 192 kbps. Facebook accepts up to 256 kbps. Telegram publishes no audio limits, but works at 192 kbps (confirmed).
 
 ## How to validate changes
@@ -129,6 +132,8 @@ docker run --rm --entrypoint supercronic -v ./archive-sync/crontab:/etc/crontab:
 3. Publish a test pattern with ffmpeg (`testsrc` + `sine`, `-g 30`) to each mode path, e.g. `rtmp://127.0.0.1:1935/live/youtube-telegram?user=zowie&pass=…` (temporarily allow `127.0.0.0/8` for `zowie` in a test copy of `mediamtx.yml`).
 4. `GET /v3/paths/list` shows which output paths are ready for the active mode. Check `GET /v3/paths/forward-dests/list?path=youtube` (and `facebook`): each destination's state is `forwarding`, `error` (with `lastError`) or `idle`. Telegram's hook appears on the sink as another publisher, e.g. `s/<key>`. Use a key without `:` for the sink, because MediaMTX rejects `:` in path names; real Telegram keys contain one.
 
+**Test ffmpeg commands with the image's FFmpeg version, not whatever is installed locally.** Behaviour differs between FFmpeg 6/7 and 8 (see Verified facts). Either run them in the container (`docker compose exec mediamtx ffmpeg …`), or install the same package in an Alpine chroot (`apk add ffmpeg` on the Alpine version the image is built from) and point MediaMTX's hooks at it through a wrapper script early in `PATH`.
+
 Changes to platform settings, the ZowieBox, or Google Cloud can't be tested here. Describe them as manual steps for the operator.
 
 ## Working conventions
@@ -147,5 +152,5 @@ Changes to platform settings, the ZowieBox, or Google Cloud can't be tested here
 
 ## Open items
 
-- **Confirm the `telegram` picture hook on the Pi** (delay, locked screen, CPU with `docker stats`), then update Status.
+- **Confirm the fixed `telegram` picture hook on the Pi** with a custom picture (picture visible, ~7 s delay, locked screen, CPU with `docker stats`), then update Status. The first version of the picture hook failed on the Pi because of the FFmpeg 8 colour tagging; the fix was verified locally with FFmpeg 8.1.
 - **Upstream reports to bluenviron/mediamtx:** (1) Telegram's ingest rejects the native `forward` client; if fixed, the `telegram` output path could use `forward` like the others. (2) The env-override panic on empty path entries; if fixed, the `forward: []` workaround could go.

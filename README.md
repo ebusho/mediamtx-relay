@@ -169,10 +169,10 @@ curl -s "http://127.0.0.1:9997/v3/paths/forward-dests/list?path=facebook"
 ```bash
 mkdir -p local && cp /path/to/your-logo.png local/telegram.png
 echo 'TELEGRAM_PICTURE=./local/telegram.png' >> .env
-docker compose up -d        # between streams
+docker compose up -d        # only after config changes, not before every stream
 ```
 
-Use a **640×360** PNG: the hook doesn't scale it, so other sizes change the stream's resolution. Without `TELEGRAM_PICTURE`, the repo's sample "Live audio" card is used. If the file `TELEGRAM_PICTURE` points to is missing, `docker compose up` stops with a "bind source path does not exist" error instead of starting with a broken Telegram picture.
+Use a **640×360** PNG: the hook doesn't scale it, so other sizes change the stream's resolution. Export it **without transparency** (a solid background): the alpha channel is dropped, and transparent areas show whatever colour the file stores underneath, often black. To update the picture later, overwrite the same file (`cp new.png local/telegram.png`); the next stream uses it, no restart needed. Without `TELEGRAM_PICTURE`, the repo's sample "Live audio" card is used. If the file `TELEGRAM_PICTURE` points to is missing, `docker compose up` stops with a "bind source path does not exist" error instead of starting with a broken Telegram picture.
 
 **Logs:** stream keys are stripped from MediaMTX's log output.
 
@@ -294,6 +294,7 @@ docker compose exec archive-sync supercronic -test /etc/crontab && docker compos
 | A platform receives the stream when it shouldn't (or the reverse) | The ZowieBox stream key selects the mode: check it, then check the mode's `forward` list in `mediamtx.yml` |
 | One destination stuck in `error` | That platform's key changed or was revoked: update `.env` |
 | Telegram listeners see "not broadcasting live stream data" (audio still plays) | The Telegram push has no video track: check the `telegram` hook in `mediamtx.yml` |
+| Telegram shows a black picture and "not broadcasting", audio broken | The picture stream is colour-tagged wrongly. The `telegram` hook must keep `scale=out_color_matrix=bt709:out_range=tv` and the `-color*` flags (see `mediamtx.yml`) |
 | Telegram shows "doesn't see any stream" | Compare `TELEGRAM_SERVER_URL` and `TELEGRAM_STREAM_KEY` with the app (a revoked key or a different `dcN` server); check the logs for `runOnOnline command exited` |
 | YouTube shows no data | YouTube requires both video and audio; check the ZowieBox audio input |
 | No archive files | Stick not mounted (`findmnt /mnt/stream-archive`), or `stream-audio/` missing on it |

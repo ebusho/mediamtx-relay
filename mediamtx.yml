@@ -90,16 +90,21 @@ paths:
   #   client (EOF right after connecting), while ffmpeg with the same URL and key works.
   # - The video track must stay, at 30 fps: without it Telegram tells listeners the channel is
   #   "not broadcasting live stream data"; at 5 fps its player added 30+ s of delay.
-  # - movie+loop decodes the PNG once and repeats it, instead of re-reading it every frame.
+  # - movie+loop decodes the PNG once and repeats it, instead of re-reading it every frame;
+  #   fps=30 gives clean 30 fps timestamps.
+  # - scale=out_color_matrix=bt709:out_range=tv and the -color* flags: FFmpeg 8 (the version in
+  #   the mediamtx -ffmpeg image) otherwise tags a PNG-based stream as full-range RGB ("pc, gbr"),
+  #   which Telegram can't play (black picture, "not broadcasting", broken audio).
   # - -shortest ends the push when the audio input ends, instead of sending a silent picture.
   # $TELEGRAM_RTMP_URL comes from compose.yaml. Hooks run without a shell, so no quoting is needed.
   telegram:
     runOnOnline: >
       ffmpeg -hide_banner -loglevel warning
       -rw_timeout 10000000 -i rtmp://127.0.0.1:1935/$MTX_PATH
-      -f lavfi -i movie=/assets/telegram.png,loop=loop=-1:size=1,setpts=N/30/TB,format=yuv420p
+      -f lavfi -i movie=/assets/telegram.png,loop=loop=-1:size=1,fps=30,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p
       -map 1:v -map 0:a
-      -c:v libx264 -preset ultrafast -tune stillimage -r 30 -g 60 -b:v 100k
+      -c:v libx264 -preset ultrafast -tune stillimage -g 60 -b:v 100k
+      -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv
       -c:a copy -shortest
       -rw_timeout 10000000 -f flv $TELEGRAM_RTMP_URL
     runOnOnlineRestart: true
