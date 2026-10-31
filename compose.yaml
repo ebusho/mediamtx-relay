@@ -6,6 +6,7 @@ services:
     network_mode: host # recommended by MediaMTX; keeps the ZowieBox's real source IP
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
+      - ./assets:/assets:ro # assets/telegram.png: the picture Telegram listeners see
       - /etc/localtime:/etc/localtime:ro # archive file names in the Pi's local time
       - type: bind
         source: /mnt/stream-archive # USB stick mount point (see fstab)

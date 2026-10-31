@@ -82,15 +82,25 @@ paths:
   facebook:
     forward: []
 
-  # Telegram's ingest closes connections from MediaMTX's native RTMP client (EOF right after
-  # connecting), while ffmpeg with the same URL and key works. So Telegram gets the stream
-  # from ffmpeg (copy, no re-encoding). $TELEGRAM_RTMP_URL comes from compose.yaml.
-  # Hooks run without a shell, so no quoting is needed.
+  # Telegram, for listeners: the audio is copied unchanged, and the camera video is replaced by
+  # a static picture (assets/telegram.png, 640x360). Tested on real Telegram: plays with the
+  # phone screen locked, ~7 s delay. Camera video on Telegram was buffered heavily and stopped
+  # when the screen locked.
+  # - ffmpeg, not forward: Telegram's ingest closes connections from MediaMTX's native RTMP
+  #   client (EOF right after connecting), while ffmpeg with the same URL and key works.
+  # - The video track must stay, at 30 fps: without it Telegram tells listeners the channel is
+  #   "not broadcasting live stream data"; at 5 fps its player added 30+ s of delay.
+  # - movie+loop decodes the PNG once and repeats it, instead of re-reading it every frame.
+  # - -shortest ends the push when the audio input ends, instead of sending a silent picture.
+  # $TELEGRAM_RTMP_URL comes from compose.yaml. Hooks run without a shell, so no quoting is needed.
   telegram:
     runOnOnline: >
       ffmpeg -hide_banner -loglevel warning
       -rw_timeout 10000000 -i rtmp://127.0.0.1:1935/$MTX_PATH
-      -c copy
+      -f lavfi -i movie=/assets/telegram.png,loop=loop=-1:size=1,setpts=N/30/TB,format=yuv420p
+      -map 1:v -map 0:a
+      -c:v libx264 -preset ultrafast -tune stillimage -r 30 -g 60 -b:v 100k
+      -c:a copy -shortest
       -rw_timeout 10000000 -f flv $TELEGRAM_RTMP_URL
     runOnOnlineRestart: true
 

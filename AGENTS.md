@@ -15,7 +15,7 @@ A multistream relay for a ZowieBox hardware encoder. The ZowieBox can push at mo
 Modes feed output paths with **local** forwards (`rtmp://127.0.0.1:1935/<output>`). Each output path is defined once:
 
 - **`youtube`, `facebook`:** native `forward` to the platform; destinations injected from env.
-- **`telegram`:** `runOnOnline` hook running ffmpeg with `-c copy` to Telegram.
+- **`telegram`:** `runOnOnline` hook running ffmpeg that copies the audio and replaces the camera video with a static picture: `assets/telegram.png` (640×360), decoded once and repeated at 30 fps, encoded at ~60–100 kbps. This is what lets Telegram listeners lock their phones.
 - **`archive`:** `runOnOnline` hook running ffmpeg with `-map 0:a -c copy` into hourly `.aac` files on the USB stick.
 
 A second container uploads finished archive files to Google Drive every 15 minutes (rclone run by supercronic).
@@ -34,6 +34,7 @@ A second container uploads finished archive files to Google Drive every 15 minut
 |---|---|
 | `compose.yaml` | `mediamtx` (relay + archive recording) and `archive-sync` (scheduled upload) |
 | `mediamtx.yml` | Ingest, auth, mode paths, output paths, Telegram and archive hooks. **No secrets** |
+| `assets/telegram.png` | Picture Telegram listeners see (640×360); mounted at `/assets` |
 | `archive-sync/Dockerfile` | `rclone/rclone` + supercronic (version- and SHA-256-pinned, arm64 and amd64) |
 | `archive-sync/crontab` | The one scheduled `rclone copy` |
 | `.env.example` | Every variable `compose.yaml` needs, with placeholders |
@@ -44,17 +45,18 @@ A second container uploads finished archive files to Google Drive every 15 minut
 
 1. **No secrets in tracked files.** Stream keys and the publish password live only in `.env`. They reach MediaMTX as environment variables (`MTX_PATHS_YOUTUBE_FORWARD_0_DEST`, `MTX_PATHS_FACEBOOK_FORWARD_0_DEST`, `MTX_AUTHINTERNALUSERS_0_PASS`, and `TELEGRAM_RTMP_URL` for the hook). rclone credentials live in `rclone/rclone.conf`. Both are git-ignored.
 2. **Platform destinations live only on output paths; mode paths forward only to local output paths.** A mode is a list of `rtmp://127.0.0.1:1935/<output>` destinations, so `mediamtx.yml` never needs a key. Never set `forward` on `pathDefaults` (every path would inherit it), and don't add `all_others`.
-3. **Output path names stay env-addressable:** lowercase, no `/` or `_` (`youtube`, `facebook`). MediaMTX env overrides can't address other names. Keep `forward: []` on `youtube` and `facebook`: an empty (null) path entry makes the env override panic in v1.21.2.
+3. **Output paths with env-injected destinations stay env-addressable:** lowercase, no `/` or `_` (`youtube`, `facebook`). Hook-based outputs (`telegram`, `archive`) take their secrets from environment variables in the hook command instead.
 4. **Publishing is split by source.** The `zowie` user (LAN subnet + password) may publish **only** to the mode paths; output paths accept publishing only from loopback. A new mode needs its own `publish` permission for `zowie`.
 5. **The `zowie` user stays first in `authInternalUsers`.** Its password is injected by index (`..._0_PASS`).
-6. **Telegram stays on its own ffmpeg hook on the `telegram` path, separate from the archive hook on the `archive` path.** Don't move Telegram back to `forward` without testing against the real Telegram ingest first (see Verified facts), and don't merge the two hooks into one ffmpeg process: a Telegram failure would then interrupt the archive.
-7. **Nothing is re-encoded.** Forwarding is native, the Telegram hook uses `-c copy`, and the archive uses `-map 0:a -c copy`. Transcoding on a Pi 4 would be expensive and would change quality. Encoder settings belong on the ZowieBox.
-8. **Never write archive data to the SD card.** Both containers rely on `stream-audio/` existing only on the stick: if it's missing, the hook and the upload fail and retry instead of writing elsewhere. Never create `stream-audio/` on the host path or in an entrypoint, and never use `create_host_path: true` for it. Both bind mounts use `propagation: rslave` so a stick mounted later is picked up.
-9. **`rclone copy`, never `rclone sync` or `move`.** Losing or wiping local files must never delete the remote archive.
-10. **Keep `RCLONE_MIN_AGE`** (currently `10m`). The file being recorded keeps changing its mtime; this is what stops partial files from being uploaded.
-11. **Keep `RCLONE_BWLIMIT`** (currently `256k`, about 2 Mbit/s). Uploads must never compete with a live stream for upload bandwidth.
-12. **Pin exact versions everywhere:** the MediaMTX image tag, the rclone image tag, and supercronic's version plus its checksums. No `latest`, no ranges.
-13. **Explicit names.** Environment variables are spelled out (`YOUTUBE_STREAM_KEY`, not `YT_KEY`). The repo owner explicitly asked for this.
+6. **Telegram stays on its own ffmpeg hook on the `telegram` path, separate from the archive hook on the `archive` path.** There is one Telegram output: Telegram gets audio plus a picture, never the camera video (the owner chose to replace it, not to add a second Telegram output). Don't move Telegram back to `forward` without testing against the real Telegram ingest first (see Verified facts), and don't merge the Telegram and archive hooks into one ffmpeg process: a Telegram failure would then interrupt the archive.
+7. **Audio and camera video are never re-encoded.** Forwarding is native and the hooks copy the audio. The only encoder is Telegram's picture. Keep it cheap: a 640×360 PNG, decoded once (`movie` + `loop`), `ultrafast`, `stillimage`, 30 fps. A black picture measured about a quarter of one Pi 4 core; a logo costs somewhat more. Transcoding the camera video on a Pi 4 would be expensive and would change quality. Encoder settings belong on the ZowieBox.
+8. **Keep Telegram's picture track at 30 fps.** See Verified facts: no video track makes Telegram show listeners a "not broadcasting" notice, and 5 fps made Telegram's player add 30+ s of delay. `assets/telegram.png` must exist and stay 640×360; the hook doesn't scale it.
+9. **Never write archive data to the SD card.** Both containers rely on `stream-audio/` existing only on the stick: if it's missing, the hook and the upload fail and retry instead of writing elsewhere. Never create `stream-audio/` on the host path or in an entrypoint, and never use `create_host_path: true` for it. Both bind mounts use `propagation: rslave` so a stick mounted later is picked up.
+10. **`rclone copy`, never `rclone sync` or `move`.** Losing or wiping local files must never delete the remote archive.
+11. **Keep `RCLONE_MIN_AGE`** (currently `10m`). The file being recorded keeps changing its mtime; this is what stops partial files from being uploaded.
+12. **Keep `RCLONE_BWLIMIT`** (currently `256k`, about 2 Mbit/s). Uploads must never compete with a live stream for upload bandwidth.
+13. **Pin exact versions everywhere:** the MediaMTX image tag, the rclone image tag, and supercronic's version plus its checksums. No `latest`, no ranges.
+14. **Explicit names.** Environment variables are spelled out (`YOUTUBE_STREAM_KEY`, not `YT_KEY`). The repo owner explicitly asked for this.
 
 ## Decisions and rejected alternatives
 
@@ -94,6 +96,11 @@ These were each considered and rejected for stated reasons. Don't reintroduce th
   - Uses its own OAuth client ID; rclone's shared client ID is being retired in 2026.
   - The app is **published** to production, because grants in Testing mode expire after a week.
   - Scope is `drive.file`, so rclone only sees files it created. Changing the client ID hides existing uploads from rclone.
+- **Telegram listening (tested 2026-10-28 on real Telegram):**
+  - Camera video: Telegram's player buffers heavily, and playback stops when the phone screen locks.
+  - Audio only (no video track): Telegram accepts it and it plays with the screen locked, but admins see "Telegram doesn't see any stream" and listeners see "<channel> is currently not broadcasting live stream data".
+  - Audio + black picture at 5 fps: plays with the screen locked, but 30+ s of delay.
+  - Audio + black picture at 30 fps: plays with the screen locked, ~7 s delay, no notices. The repo's hook uses the same settings with a PNG instead of black.
 - **Audio:** ZowieBox encodes AAC-LC, 48 kHz, stereo, line-in, at 192 kbps. Facebook accepts up to 256 kbps. Telegram publishes no audio limits, but works at 192 kbps (confirmed).
 
 ## How to validate changes
@@ -135,7 +142,9 @@ Changes to platform settings, the ZowieBox, or Google Cloud can't be tested here
 - **Confirmed on the Pi (2026-10-14):** `docker compose up -d --build` works; the ZowieBox publishes with the `main?user=…&pass=…` key; YouTube, Facebook and Telegram (via the ffmpeg hook) receive the stream, with 192 kbps audio.
 - **Modes (2026-10-15):** all three modes (`main`, `youtube-telegram`, `archive-only`) confirmed on the Pi with the real platforms; each reached exactly its output paths.
 - **Archive upload (2026-10-15):** the rclone Google Drive remote is configured and `archive-sync` uploads successfully.
+- **Telegram audio (2026-10-28):** audio + black picture at 30 fps was confirmed against real Telegram by running ffmpeg by hand (locked-screen playback, ~7 s delay, ~250 kbps upload, ~25% of one core). The repo's `telegram` hook (same settings, picture from `assets/telegram.png`) was tested locally in all modes; not yet confirmed on the Pi.
 
 ## Open items
 
+- **Confirm the `telegram` picture hook on the Pi** (delay, locked screen, CPU with `docker stats`), then update Status.
 - **Upstream reports to bluenviron/mediamtx:** (1) Telegram's ingest rejects the native `forward` client; if fixed, the `telegram` output path could use `forward` like the others. (2) The env-override panic on empty path entries; if fixed, the `forward: []` workaround could go.

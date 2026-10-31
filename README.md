@@ -8,9 +8,11 @@ The ZowieBox picks a **mode** with its stream key:
 
 | Mode (stream key) | YouTube | Facebook | Telegram | Audio archive |
 |---|:---:|:---:|:---:|:---:|
-| `main` | ✓ | ✓ | ✓ | ✓ |
-| `youtube-telegram` | ✓ | | ✓ | ✓ |
+| `main` | ✓ | ✓ | ✓ audio | ✓ |
+| `youtube-telegram` | ✓ | | ✓ audio | ✓ |
 | `archive-only` | | | | ✓ |
+
+**Telegram gets audio with a picture.** The audio is copied unchanged, and instead of the camera video Telegram shows a static picture (`assets/telegram.png`). Listeners can lock their phone and keep listening, with about 7 s of delay. With camera video, Telegram's player buffered heavily and stopped when the screen locked.
 
 ```mermaid
 flowchart LR
@@ -23,7 +25,7 @@ flowchart LR
 
     YP -- "RTMPS (forward)" --> Y[YouTube]
     FP -- "RTMPS (forward)" --> F[Facebook]
-    TP -- "RTMPS (ffmpeg hook)" --> T[Telegram]
+    TP -- "RTMPS (ffmpeg hook: audio + picture)" --> T[Telegram]
     AP -- "AAC copy, hourly files" --> U[(USB stick)]
     U -- "rclone copy every 15 min" --> C[(Google Drive)]
 ```
@@ -31,7 +33,7 @@ flowchart LR
 - **Modes and outputs:** every destination is an **output path** inside MediaMTX (`youtube`, `facebook`, `telegram`, `archive`), defined once. A **mode path** is just a list of output paths to feed, using local forwards. Adding or changing a mode never touches platform settings.
 - **YouTube and Facebook** use MediaMTX's native `forward` feature (v1.20+). Each destination has its own handler, so a failing platform retries every 5 s without affecting the others.
 - **Telegram** is pushed by an ffmpeg hook, because Telegram's ingest closes connections from MediaMTX's native RTMP client, while ffmpeg with the same URL and key works. It's an independent process: a Telegram failure doesn't affect the other platforms or the archive.
-- **Nothing is re-encoded.** Video and audio are copied as the ZowieBox encoded them, so CPU and RAM use stay low.
+- **Audio is never re-encoded.** Everything is copied as the ZowieBox encoded it. The one exception is Telegram's picture, which is encoded on the Pi from `assets/telegram.png` (~60–100 kbps). A black picture measured about a quarter of one CPU core on the Pi 4, and a logo costs somewhat more; check with `docker stats mediamtx --no-stream` while live.
 - **The archive** is audio only, copied bit for bit from the stream into hourly `.aac` files.
 
 ## Repository layout
@@ -40,6 +42,7 @@ flowchart LR
 |---|---|
 | `compose.yaml` | Two services: `mediamtx` (relay and archive recording) and `archive-sync` (scheduled upload) |
 | `mediamtx.yml` | MediaMTX config: RTMP ingest, auth, modes, output paths, Telegram and archive hooks. Contains no secrets |
+| `assets/telegram.png` | The 640×360 picture Telegram listeners see instead of the camera video |
 | `.env.example` | Template for `.env`, which holds the version pin, stream keys and publish password |
 | `archive-sync/` | `Dockerfile` (official rclone image plus pinned, checksum-verified supercronic) and the `crontab` |
 | `.gitignore` | Keeps `.env` and `rclone/` (remote credentials) out of Git |
@@ -160,6 +163,8 @@ curl -s "http://127.0.0.1:9997/v3/paths/forward-dests/list?path=facebook"
 
 **Telegram status:** Telegram isn't a forward destination. While it's live, the `telegram` path is ready, and its errors appear in the logs as `[path telegram] runOnOnline command exited`.
 
+**Changing Telegram's picture:** replace `assets/telegram.png` with your own **640×360** PNG (the hook doesn't scale, so other sizes change the stream's resolution), then run `docker compose restart mediamtx` between streams. The sample picture is a generic "Live audio" card.
+
 **Logs:** stream keys are stripped from MediaMTX's log output.
 
 ```bash
@@ -279,6 +284,7 @@ docker compose exec archive-sync supercronic -test /etc/crontab && docker compos
 | `failed to authenticate` in the logs | Wrong password in the ZowieBox, its IP is outside `192.168.10.0/24`, or the stream key names a mode that doesn't exist |
 | A platform receives the stream when it shouldn't (or the reverse) | The ZowieBox stream key selects the mode: check it, then check the mode's `forward` list in `mediamtx.yml` |
 | One destination stuck in `error` | That platform's key changed or was revoked: update `.env` |
+| Telegram listeners see "not broadcasting live stream data" (audio still plays) | The Telegram push has no video track: check the `telegram` hook in `mediamtx.yml` and that `assets/telegram.png` exists |
 | Telegram shows "doesn't see any stream" | Compare `TELEGRAM_SERVER_URL` and `TELEGRAM_STREAM_KEY` with the app (a revoked key or a different `dcN` server); check the logs for `runOnOnline command exited` |
 | YouTube shows no data | YouTube requires both video and audio; check the ZowieBox audio input |
 | No archive files | Stick not mounted (`findmnt /mnt/stream-archive`), or `stream-audio/` missing on it |
@@ -293,4 +299,5 @@ docker compose exec archive-sync supercronic -test /etc/crontab && docker compos
 - **Host networking** is recommended by MediaMTX. It preserves the ZowieBox's real source IP for the subnet check and lets the API bind to the Pi's loopback.
 - **Scheduling with supercronic in a container:** Compose has no scheduling primitive, so the scheduler runs as a container. supercronic is built for that: no sleep loop, no Docker socket, and no extra crontab file on the host. Everything (image, schedule, flags and mounts) is versioned in this repo and deployed with `docker compose up -d`.
 - **Telegram via an ffmpeg hook instead of `forward`:** tested on v1.21.2, Telegram's ingest closes connections from MediaMTX's RTMP client immediately (`EOF`), while ffmpeg with the identical URL and key streams fine. The hook lives on the `telegram` output path, so it runs only in modes that include Telegram, and it's independent of the archive hook on the `archive` path.
-- **The `-ffmpeg` image variant** is needed by both hooks (Telegram and the archive).
+- **Telegram: audio with a picture, not pure audio:** tested on real Telegram. Audio-only streams play (also with the screen locked), but Telegram then tells listeners the channel "is currently not broadcasting live stream data". A picture at 5 fps fixed that, but Telegram's player added 30+ s of delay. At 30 fps the delay dropped to about 7 s. A static picture compresses to almost nothing. The PNG is decoded once and repeated (`movie` + `loop` filters), which measured about half the CPU of re-reading it every frame.
+- **The `-ffmpeg` image variant** is needed by the Telegram and archive hooks.
